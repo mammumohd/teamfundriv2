@@ -2,7 +2,14 @@ import { DailyLedgerEntry, FundUsageRecord } from '../types';
 import { formatTime12h } from './calculator';
 
 export const GOOGLE_APPS_SCRIPT_CODE = `/**
+ * @OnlyCurrentDoc
+ *
  * Google Apps Script Web App for Office Arrival & Team Fund Tracker
+ * 
+ * PRIVACY GUARANTEE:
+ * The '@OnlyCurrentDoc' tag restricts access EXCLUSIVELY to this single spreadsheet.
+ * It CANNOT read, edit, view, or access any other document or sheet in your Google Drive.
+ *
  * 1. In your Google Sheet, click Extensions > Apps Script
  * 2. Replace everything in Code.gs with this code
  * 3. Click Save, then click Deploy > New deployment
@@ -10,7 +17,7 @@ export const GOOGLE_APPS_SCRIPT_CODE = `/**
  * 5. Configuration:
  *    - Execute as: "Me"
  *    - Who has access: "Anyone"
- * 6. Click Deploy, Authorize access, and copy the Web App URL!
+ * 6. Click Deploy, Authorize access (for this sheet only), and copy the Web App URL!
  */
 
 function setupHeaders() {

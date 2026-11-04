@@ -194,11 +194,16 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                 2
               </span>
               <div className="space-y-2 flex-1">
-                <span className="font-semibold text-slate-900 block">
-                  Paste the Apps Script Webhook
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-slate-900 block">
+                    Paste the Apps Script Webhook
+                  </span>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-medium px-1.5 py-0.5 rounded">
+                    Single Sheet Only
+                  </span>
+                </div>
                 <p className="text-slate-500 text-[11px]">
-                  In your Google Sheet, click <strong>Extensions &gt; Apps Script</strong>, delete whatever is in the editor, and paste this ready-to-use script:
+                  In your Google Sheet, click <strong>Extensions &gt; Apps Script</strong>, delete whatever is in the editor, and paste this script. <em>It includes <code className="text-slate-800 font-mono">@OnlyCurrentDoc</code> to restrict permissions strictly to this single sheet only (never your other files).</em>
                 </p>
                 <button
                   type="button"
