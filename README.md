@@ -40,20 +40,20 @@ git init
 git add .
 git commit -m "Initial commit of Office Arrival & Team Fund Tracker"
 git branch -M main
-git remote add origin https://github.com/<YOUR-USERNAME>/<YOUR-REPO-NAME>.git
+git remote add origin https://github.com/<YOUR-USERNAME>/teamfundriv2.git
 git push -u origin main
 ```
 
 ### Step 2: Enable GitHub Pages in Repository Settings
 
-1. Open your repository on GitHub.
+1. Open your repository on GitHub (`teamfundriv2`).
 2. Go to **Settings** > **Pages** (in the left sidebar).
 3. Under **Build and deployment** > **Source**, select **GitHub Actions**.
 4. That's it! GitHub will automatically trigger the included workflow (`.github/workflows/deploy.yml`).
 
 Within 1–2 minutes, your live site URL will be ready at:
 ```
-https://<YOUR-USERNAME>.github.io/<YOUR-REPO-NAME>/
+https://<YOUR-USERNAME>.github.io/teamfundriv2/
 ```
 
 Every subsequent `git push` to `main` will automatically build and deploy your updates.
