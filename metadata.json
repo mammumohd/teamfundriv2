@@ -1,0 +1,6 @@
+{
+  "name": "Office Arrival & Team Fund Tracker",
+  "description": "Calculates arrival times for Muhammed & Midhun and tracks team fund contributions with individual breakdowns and daily logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
