@@ -45,6 +45,38 @@ export function formatTime12h(timeStr: string): string {
 }
 
 /**
+ * Parses any time string (like "9:50 AM", "09:50 AM", "13:45", "1:30 PM") into "HH:MM" (24h)
+ */
+export function parseTo24hTime(timeStr: string, defaultFallback = '10:00'): string {
+  if (!timeStr) return defaultFallback;
+  const trimmed = timeStr.trim().toUpperCase();
+  
+  // If already standard HH:MM (24h)
+  if (/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(trimmed)) {
+    const [h, m] = trimmed.split(':');
+    return `${h.padStart(2, '0')}:${m}`;
+  }
+
+  // If 12h format like "9:50 AM", "10:00 PM"
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/);
+  if (match) {
+    let hours = parseInt(match[1], 10);
+    const minutes = match[2];
+    const meridiem = match[3];
+
+    if (meridiem === 'PM' && hours < 12) {
+      hours += 12;
+    } else if (meridiem === 'AM' && hours === 12) {
+      hours = 0;
+    }
+
+    return `${hours.toString().padStart(2, '0')}:${minutes}`;
+  }
+
+  return defaultFallback;
+}
+
+/**
  * Format minutes delay into "Xh Ym" or "On time"
  */
 export function formatDelayDescription(delayMinutes: number): string {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Header } from './components/Header';
 import { ArrivalInputs } from './components/ArrivalInputs';
 import { TeamFundTable } from './components/TeamFundTable';
@@ -8,13 +8,14 @@ import { ShareModal } from './components/ShareModal';
 import { ClearDuesModal } from './components/ClearDuesModal';
 import { GoogleSheetsModal } from './components/GoogleSheetsModal';
 import { calculateTeamFund } from './utils/calculator';
-import { syncDailyEntryToSheets, syncExpenseToSheets } from './utils/googleSheets';
+import { syncDailyEntryToSheets, syncExpenseToSheets, fetchSheetEntries } from './utils/googleSheets';
 import { DailyLedgerEntry, FundUsageRecord, GoogleSheetsConfig, RoundingMode } from './types';
 import { Check } from 'lucide-react';
 
 const STORAGE_KEY = 'office_fund_history_v1';
 const USAGE_STORAGE_KEY = 'office_fund_usage_v1';
 const SHEETS_STORAGE_KEY = 'office_fund_sheets_config_v1';
+const DRAFT_PREFIX = 'office_fund_draft_';
 
 export default function App() {
   const getTodayString = () => {
@@ -25,34 +26,8 @@ export default function App() {
     return `${y}-${m}-${d}`;
   };
 
-  const [selectedDate, setSelectedDate] = useState<string>(getTodayString);
-  const [muhammedTime, setMuhammedTime] = useState<string>('09:50');
-  const [midhunTime, setMidhunTime] = useState<string>('10:00');
-  const [roundingMode, setRoundingMode] = useState<RoundingMode>('ceil');
-  const [paidStatusMap, setPaidStatusMap] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<'calculator' | 'history'>('calculator');
-  const [isRulesOpen, setIsRulesOpen] = useState(false);
-  const [isShareOpen, setIsShareOpen] = useState(false);
-  const [isClearDuesOpen, setIsClearDuesOpen] = useState(false);
-  const [isSheetsModalOpen, setIsSheetsModalOpen] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  // Google Sheets configuration
-  const [sheetsConfig, setSheetsConfig] = useState<GoogleSheetsConfig>(() => {
-    try {
-      const stored = localStorage.getItem(SHEETS_STORAGE_KEY);
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch (e) {
-      console.error('Failed to load sheets config', e);
-    }
-    return {
-      webAppUrl: '',
-      sheetUrl: '',
-      autoSync: true,
-    };
-  });
+  const todayDateStr = getTodayString();
+  const [selectedDate, setSelectedDate] = useState<string>(todayDateStr);
 
   // History entries from localStorage
   const [historyEntries, setHistoryEntries] = useState<DailyLedgerEntry[]>(() => {
@@ -85,6 +60,74 @@ export default function App() {
         createdAt: Date.now() - 86400000,
       },
     ];
+  });
+
+  // Check if today already has a saved record or draft
+  const initialTodayData = useMemo(() => {
+    const todaySaved = historyEntries.find((e) => e.date === todayDateStr);
+    if (todaySaved) {
+      const paidMap: Record<string, boolean> = {};
+      todaySaved.contributions.forEach((c) => {
+        paidMap[c.memberId] = c.paid;
+      });
+      return {
+        muhammedTime: todaySaved.muhammedTime || '09:50',
+        midhunTime: todaySaved.midhunTime || '10:00',
+        roundingMode: todaySaved.roundingMode || 'ceil',
+        paidStatusMap: paidMap,
+      };
+    }
+
+    try {
+      const draft = localStorage.getItem(DRAFT_PREFIX + todayDateStr);
+      if (draft) {
+        const parsed = JSON.parse(draft);
+        return {
+          muhammedTime: parsed.muhammedTime || '09:50',
+          midhunTime: parsed.midhunTime || '10:00',
+          roundingMode: parsed.roundingMode || 'ceil',
+          paidStatusMap: parsed.paidStatusMap || {},
+        };
+      }
+    } catch {
+      // Ignore
+    }
+
+    return {
+      muhammedTime: '09:50',
+      midhunTime: '10:00',
+      roundingMode: 'ceil' as RoundingMode,
+      paidStatusMap: {} as Record<string, boolean>,
+    };
+  }, []);
+
+  const [muhammedTime, setMuhammedTime] = useState<string>(initialTodayData.muhammedTime);
+  const [midhunTime, setMidhunTime] = useState<string>(initialTodayData.midhunTime);
+  const [roundingMode, setRoundingMode] = useState<RoundingMode>(initialTodayData.roundingMode);
+  const [paidStatusMap, setPaidStatusMap] = useState<Record<string, boolean>>(initialTodayData.paidStatusMap);
+
+  const [activeTab, setActiveTab] = useState<'calculator' | 'history'>('calculator');
+  const [isRulesOpen, setIsRulesOpen] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
+  const [isClearDuesOpen, setIsClearDuesOpen] = useState(false);
+  const [isSheetsModalOpen, setIsSheetsModalOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Google Sheets configuration
+  const [sheetsConfig, setSheetsConfig] = useState<GoogleSheetsConfig>(() => {
+    try {
+      const stored = localStorage.getItem(SHEETS_STORAGE_KEY);
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error('Failed to load sheets config', e);
+    }
+    return {
+      webAppUrl: '',
+      sheetUrl: '',
+      autoSync: true,
+    };
   });
 
   // Fund usage / expenditure records
@@ -127,6 +170,65 @@ export default function App() {
     }
   }, [sheetsConfig]);
 
+  // Auto-save today's working state to draft so refreshing never loses inputs
+  useEffect(() => {
+    if (selectedDate === todayDateStr) {
+      try {
+        localStorage.setItem(
+          DRAFT_PREFIX + todayDateStr,
+          JSON.stringify({ muhammedTime, midhunTime, roundingMode, paidStatusMap })
+        );
+      } catch {
+        // Ignore
+      }
+    }
+  }, [muhammedTime, midhunTime, roundingMode, paidStatusMap, selectedDate, todayDateStr]);
+
+  // FETCH GOOGLE SHEET DATA ON LOAD & REFRESH:
+  // If data exists in Google Sheet for today's date, show it!
+  const hasFetchedFromSheet = useRef(false);
+  useEffect(() => {
+    if (!sheetsConfig.webAppUrl) return;
+
+    let isMounted = true;
+    const fetchLatestFromSheet = async () => {
+      try {
+        const sheetEntries = await fetchSheetEntries(sheetsConfig.webAppUrl);
+        if (!isMounted || sheetEntries.length === 0) return;
+
+        // 1. Merge all sheet entries into historyEntries
+        setHistoryEntries((prev) => {
+          const map = new Map<string, DailyLedgerEntry>();
+          prev.forEach((e) => map.set(e.date, e));
+          sheetEntries.forEach((e) => map.set(e.date, e));
+          return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+        });
+
+        // 2. Check if today's date exists in Google Sheet
+        const todayMatch = sheetEntries.find((e) => e.date === todayDateStr);
+        if (todayMatch && selectedDate === todayDateStr) {
+          setMuhammedTime(todayMatch.muhammedTime);
+          setMidhunTime(todayMatch.midhunTime);
+          setRoundingMode(todayMatch.roundingMode || 'ceil');
+
+          const paidMap: Record<string, boolean> = {};
+          todayMatch.contributions.forEach((c) => {
+            paidMap[c.memberId] = c.paid;
+          });
+          setPaidStatusMap(paidMap);
+          showToast(`Loaded today's records from Google Sheet`);
+        }
+      } catch (err) {
+        console.error('Error auto-syncing from sheet:', err);
+      }
+    };
+
+    if (!hasFetchedFromSheet.current) {
+      hasFetchedFromSheet.current = true;
+      fetchLatestFromSheet();
+    }
+  }, [sheetsConfig.webAppUrl, todayDateStr, selectedDate]);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -165,6 +267,36 @@ export default function App() {
     return fromHistory + pendingTodayAmount;
   }, [historyEntries, selectedDate, pendingTodayAmount]);
 
+  // When date is changed in header
+  const handleDateChange = (newDate: string) => {
+    setSelectedDate(newDate);
+
+    // If selected date has saved entry in history or sheet
+    const existing = historyEntries.find((e) => e.date === newDate);
+    if (existing) {
+      setMuhammedTime(existing.muhammedTime);
+      setMidhunTime(existing.midhunTime);
+      setRoundingMode(existing.roundingMode || 'ceil');
+      const paidMap: Record<string, boolean> = {};
+      existing.contributions.forEach((c) => {
+        paidMap[c.memberId] = c.paid;
+      });
+      setPaidStatusMap(paidMap);
+      showToast(`Loaded ${newDate}`);
+    } else if (newDate === todayDateStr) {
+      // Revert to today's draft or defaults
+      setMuhammedTime(initialTodayData.muhammedTime);
+      setMidhunTime(initialTodayData.midhunTime);
+      setRoundingMode(initialTodayData.roundingMode);
+      setPaidStatusMap(initialTodayData.paidStatusMap);
+    } else {
+      // New date with no records -> defaults
+      setMuhammedTime('09:50');
+      setMidhunTime('10:00');
+      setPaidStatusMap({});
+    }
+  };
+
   const handleTogglePaid = (memberId: string) => {
     setPaidStatusMap((prev) => ({
       ...prev,
@@ -186,7 +318,12 @@ export default function App() {
     setMidhunTime('10:00');
     setRoundingMode('ceil');
     setPaidStatusMap({});
-    setSelectedDate(getTodayString());
+    setSelectedDate(todayDateStr);
+    try {
+      localStorage.removeItem(DRAFT_PREFIX + todayDateStr);
+    } catch {
+      // Ignore
+    }
     showToast('Reset to defaults');
   };
 
@@ -319,7 +456,7 @@ export default function App() {
       {/* Top Bar */}
       <Header
         selectedDate={selectedDate}
-        onDateChange={setSelectedDate}
+        onDateChange={handleDateChange}
         onResetToDefaults={handleResetToDefaults}
         onOpenRules={() => setIsRulesOpen(true)}
         onOpenShare={() => setIsShareOpen(true)}

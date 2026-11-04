@@ -1,5 +1,5 @@
 import { DailyLedgerEntry, FundUsageRecord } from '../types';
-import { formatTime12h } from './calculator';
+import { formatTime12h, parseTo24hTime } from './calculator';
 
 export const GOOGLE_APPS_SCRIPT_CODE = `/**
  * @OnlyCurrentDoc
@@ -12,7 +12,7 @@ export const GOOGLE_APPS_SCRIPT_CODE = `/**
  *
  * 1. In your Google Sheet, click Extensions > Apps Script
  * 2. Replace everything in Code.gs with this code
- * 3. Click Save, then click Deploy > New deployment
+ * 3. Click Save, then click Deploy > New deployment (or Manage deployments > Edit > New version)
  * 4. Select type: "Web app"
  * 5. Configuration:
  *    - Execute as: "Me"
@@ -65,7 +65,21 @@ function doPost(e) {
 
       var statusText = pendingCount === 0 ? "All Settled" : pendingCount + " Pending";
 
-      sheet.appendRow([
+      // If row for this date already exists, update it instead of creating duplicates
+      var rows = sheet.getDataRange().getValues();
+      var rowIndex = -1;
+      for (var r = 1; r < rows.length; r++) {
+        var rowDate = rows[r][1];
+        var rowDateStr = rowDate instanceof Date
+          ? rowDate.toISOString().slice(0, 10)
+          : String(rowDate).trim();
+        if (rowDateStr === entry.date && String(rows[r][12] || "").indexOf("FUND USED") === -1) {
+          rowIndex = r + 1; // 1-indexed in sheet
+          break;
+        }
+      }
+
+      var rowValues = [
         now,
         entry.date,
         entry.muhammedTime,
@@ -80,7 +94,13 @@ function doPost(e) {
         getAmt("Remya"),
         statusText,
         entry.notes || ""
-      ]);
+      ];
+
+      if (rowIndex > 0) {
+        sheet.getRange(rowIndex, 1, 1, 14).setValues([rowValues]);
+      } else {
+        sheet.appendRow(rowValues);
+      }
 
       return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Entry logged" }))
         .setMimeType(ContentService.MimeType.JSON);
@@ -118,16 +138,64 @@ function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({
-    status: "ok",
-    message: "Office Team Fund Tracker Web App is online."
-  })).setMimeType(ContentService.MimeType.JSON);
+  try {
+    setupHeaders();
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    var data = sheet.getDataRange().getValues();
+    var entries = [];
+
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (!row || !row[1]) continue;
+
+      var rawDate = row[1];
+      var dateStr = "";
+      if (rawDate instanceof Date) {
+        var y = rawDate.getFullYear();
+        var m = (rawDate.getMonth() + 1).toString();
+        var d = rawDate.getDate().toString();
+        dateStr = y + "-" + (m.length === 1 ? "0" + m : m) + "-" + (d.length === 1 ? "0" + d : d);
+      } else {
+        dateStr = String(rawDate).trim();
+      }
+
+      var isExpense = String(row[12] || "").indexOf("FUND USED") !== -1;
+
+      entries.push({
+        recordedAt: String(row[0] || ""),
+        date: dateStr,
+        muhammedTime: String(row[2] || "").trim(),
+        midhunTime: String(row[3] || "").trim(),
+        totalFund: Number(row[4]) || 0,
+        muhammedAmt: Number(row[5]) || 0,
+        antonyAmt: Number(row[6]) || 0,
+        gulnaazAmt: Number(row[7]) || 0,
+        midhunAmt: Number(row[8]) || 0,
+        ggAmt: Number(row[9]) || 0,
+        nakulAmt: Number(row[10]) || 0,
+        remyaAmt: Number(row[11]) || 0,
+        status: String(row[12] || ""),
+        notes: String(row[13] || ""),
+        isExpense: isExpense
+      });
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      entries: entries
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "error",
+      error: err.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
 }
 `;
 
 /**
  * Sends a daily ledger entry to the Google Sheet web app.
- * Note: uses mode 'no-cors' as standard for Google Apps Script redirects.
  */
 export async function syncDailyEntryToSheets(
   webAppUrl: string,
@@ -148,7 +216,6 @@ export async function syncDailyEntryToSheets(
       },
     };
 
-    // Google Apps Script requires text/plain or no-cors redirect
     await fetch(webAppUrl, {
       method: 'POST',
       mode: 'no-cors',
@@ -203,13 +270,64 @@ export async function syncExpenseToSheets(
 }
 
 /**
+ * Fetches all records from Google Sheet
+ */
+export async function fetchSheetEntries(webAppUrl: string): Promise<DailyLedgerEntry[]> {
+  if (!webAppUrl || !webAppUrl.startsWith('http')) return [];
+
+  try {
+    const res = await fetch(webAppUrl, {
+      method: 'GET',
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+
+    if (json.status === 'success' && Array.isArray(json.entries)) {
+      return json.entries
+        .filter((r: any) => !r.isExpense && r.date)
+        .map((r: any, idx: number) => {
+          const isAllSettled =
+            String(r.status || '').toLowerCase().includes('settled') ||
+            String(r.status || '').toLowerCase().includes('paid');
+
+          const muhammedParsed = parseTo24hTime(r.muhammedTime, '09:50');
+          const midhunParsed = parseTo24hTime(r.midhunTime, '10:00');
+
+          return {
+            id: `sheet-${r.date}-${idx}`,
+            date: r.date,
+            muhammedTime: muhammedParsed,
+            midhunTime: midhunParsed,
+            totalFund: Number(r.totalFund) || 0,
+            roundingMode: 'ceil',
+            notes: r.notes || '',
+            contributions: [
+              { memberId: 'muhammed', name: 'Muhammed', amount: Number(r.muhammedAmt) || 0, paid: isAllSettled, breakdown: '' },
+              { memberId: 'antony', name: 'Antony', amount: Number(r.antonyAmt) || 0, paid: isAllSettled, breakdown: '' },
+              { memberId: 'gulnaaz', name: 'Gulnaaz', amount: Number(r.gulnaazAmt) || 0, paid: isAllSettled, breakdown: '' },
+              { memberId: 'midhun', name: 'Midhun', amount: Number(r.midhunAmt) || 0, paid: isAllSettled, breakdown: '' },
+              { memberId: 'gg', name: 'GG', amount: Number(r.ggAmt) || 0, paid: isAllSettled, breakdown: '' },
+              { memberId: 'nakul', name: 'Nakul', amount: Number(r.nakulAmt) || 0, paid: isAllSettled, breakdown: '' },
+              { memberId: 'remya', name: 'Remya', amount: Number(r.remyaAmt) || 0, paid: isAllSettled, breakdown: '' },
+            ],
+            createdAt: Date.now(),
+          } as DailyLedgerEntry;
+        });
+    }
+  } catch (err) {
+    console.error('Failed to fetch from Google Sheet:', err);
+  }
+
+  return [];
+}
+
+/**
  * Tests connection to Google Apps Script Web App
  */
 export async function testGoogleSheetsConnection(webAppUrl: string): Promise<boolean> {
   if (!webAppUrl || !webAppUrl.startsWith('http')) return false;
 
   try {
-    // Send a ping action
     await fetch(webAppUrl, {
       method: 'POST',
       mode: 'no-cors',
