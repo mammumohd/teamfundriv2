@@ -1,5 +1,6 @@
 import React from 'react';
-import { Calendar, BookOpen, Share2, History, RotateCcw, Table } from 'lucide-react';
+import { Calendar, Share2, History, RotateCcw, ExternalLink, RefreshCw } from 'lucide-react';
+import { GOOGLE_SHEET_VIEW_URL } from '../config';
 
 interface HeaderProps {
   selectedDate: string;
@@ -7,8 +8,8 @@ interface HeaderProps {
   onResetToDefaults: () => void;
   onOpenRules: () => void;
   onOpenShare: () => void;
-  onOpenGoogleSheets: () => void;
-  isSheetsConnected: boolean;
+  onRefreshFromSheet: () => void;
+  isRefreshing: boolean;
   activeTab: 'calculator' | 'history';
   onTabChange: (tab: 'calculator' | 'history') => void;
   historyCount: number;
@@ -20,8 +21,8 @@ export const Header: React.FC<HeaderProps> = ({
   onResetToDefaults,
   onOpenRules,
   onOpenShare,
-  onOpenGoogleSheets,
-  isSheetsConnected,
+  onRefreshFromSheet,
+  isRefreshing,
   activeTab,
   onTabChange,
   historyCount,
@@ -82,19 +83,29 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             )}
 
+            {/* Sync / Refresh from Google Sheet */}
             <button
-              onClick={onOpenGoogleSheets}
-              className={`px-2 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1 cursor-pointer ${
-                isSheetsConnected
-                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                  : 'text-slate-600 hover:bg-slate-100'
-              }`}
-              title="Google Sheet"
+              onClick={onRefreshFromSheet}
+              disabled={isRefreshing}
+              className="px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 rounded-md transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+              title="Refresh all data from Google Sheet"
             >
-              <Table className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Sheet</span>
-              {isSheetsConnected && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>}
+              <RefreshCw className={`w-3 h-3 text-emerald-600 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Sync Sheet</span>
             </button>
+
+            {GOOGLE_SHEET_VIEW_URL && (
+              <a
+                href={GOOGLE_SHEET_VIEW_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors flex items-center gap-1"
+                title="Open live Google Sheet"
+              >
+                <ExternalLink className="w-3 h-3" />
+                <span className="hidden md:inline">Open Sheet</span>
+              </a>
+            )}
 
             <button
               onClick={onOpenRules}
@@ -116,7 +127,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onResetToDefaults}
               className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
-              title="Reset"
+              title="Reset today's inputs"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>

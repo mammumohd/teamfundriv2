@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Header } from './components/Header';
 import { ArrivalInputs } from './components/ArrivalInputs';
 import { TeamFundTable } from './components/TeamFundTable';
@@ -6,16 +6,16 @@ import { HistoryLedger } from './components/HistoryLedger';
 import { RulebookModal } from './components/RulebookModal';
 import { ShareModal } from './components/ShareModal';
 import { ClearDuesModal } from './components/ClearDuesModal';
-import { GoogleSheetsModal } from './components/GoogleSheetsModal';
 import { calculateTeamFund } from './utils/calculator';
-import { syncDailyEntryToSheets, syncExpenseToSheets, fetchSheetEntries } from './utils/googleSheets';
-import { DailyLedgerEntry, FundUsageRecord, GoogleSheetsConfig, RoundingMode } from './types';
-import { Check } from 'lucide-react';
-
-const STORAGE_KEY = 'office_fund_history_v1';
-const USAGE_STORAGE_KEY = 'office_fund_usage_v1';
-const SHEETS_STORAGE_KEY = 'office_fund_sheets_config_v1';
-const DRAFT_PREFIX = 'office_fund_draft_';
+import {
+  fetchSheetData,
+  syncDailyEntryToSheets,
+  syncExpenseToSheets,
+  isGoogleSheetsConfigured,
+} from './utils/googleSheets';
+import { GOOGLE_SHEET_VIEW_URL } from './config';
+import { DailyLedgerEntry, FundUsageRecord, RoundingMode } from './types';
+import { Check, AlertCircle } from 'lucide-react';
 
 export default function App() {
   const getTodayString = () => {
@@ -29,205 +29,23 @@ export default function App() {
   const todayDateStr = getTodayString();
   const [selectedDate, setSelectedDate] = useState<string>(todayDateStr);
 
-  // History entries from localStorage
-  const [historyEntries, setHistoryEntries] = useState<DailyLedgerEntry[]>(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch (e) {
-      console.error('Failed to load history from localStorage', e);
-    }
-    return [
-      {
-        id: 'seed-1',
-        date: '2026-11-02',
-        muhammedTime: '09:45',
-        midhunTime: '11:15',
-        totalFund: 160,
-        roundingMode: 'ceil',
-        notes: 'Muhammed on time. Midhun late.',
-        contributions: [
-          { memberId: 'muhammed', name: 'Muhammed', amount: 0, paid: true, breakdown: 'On time' },
-          { memberId: 'antony', name: 'Antony', amount: 20, paid: true, breakdown: 'Team share' },
-          { memberId: 'gulnaaz', name: 'Gulnaaz', amount: 20, paid: true, breakdown: 'Team share' },
-          { memberId: 'midhun', name: 'Midhun', amount: 60, paid: false, breakdown: 'Share + late fee' },
-          { memberId: 'gg', name: 'GG', amount: 20, paid: true, breakdown: 'Team share' },
-          { memberId: 'nakul', name: 'Nakul', amount: 20, paid: true, breakdown: 'Team share' },
-          { memberId: 'remya', name: 'Remya', amount: 20, paid: true, breakdown: 'Team share' },
-        ],
-        createdAt: Date.now() - 86400000,
-      },
-    ];
-  });
+  // In-memory state directly from Google Sheet (No localStorage)
+  const [historyEntries, setHistoryEntries] = useState<DailyLedgerEntry[]>([]);
+  const [fundUsageRecords, setFundUsageRecords] = useState<FundUsageRecord[]>([]);
+  const [isFetchingSheet, setIsFetchingSheet] = useState<boolean>(false);
 
-  // Check if today already has a saved record or draft
-  const initialTodayData = useMemo(() => {
-    const todaySaved = historyEntries.find((e) => e.date === todayDateStr);
-    if (todaySaved) {
-      const paidMap: Record<string, boolean> = {};
-      todaySaved.contributions.forEach((c) => {
-        paidMap[c.memberId] = c.paid;
-      });
-      return {
-        muhammedTime: todaySaved.muhammedTime || '09:50',
-        midhunTime: todaySaved.midhunTime || '10:00',
-        roundingMode: todaySaved.roundingMode || 'ceil',
-        paidStatusMap: paidMap,
-      };
-    }
+  // Today's arrival times and status
+  const [muhammedTime, setMuhammedTime] = useState<string>('09:50');
+  const [midhunTime, setMidhunTime] = useState<string>('10:00');
+  const [roundingMode, setRoundingMode] = useState<RoundingMode>('ceil');
+  const [paidStatusMap, setPaidStatusMap] = useState<Record<string, boolean>>({});
 
-    try {
-      const draft = localStorage.getItem(DRAFT_PREFIX + todayDateStr);
-      if (draft) {
-        const parsed = JSON.parse(draft);
-        return {
-          muhammedTime: parsed.muhammedTime || '09:50',
-          midhunTime: parsed.midhunTime || '10:00',
-          roundingMode: parsed.roundingMode || 'ceil',
-          paidStatusMap: parsed.paidStatusMap || {},
-        };
-      }
-    } catch {
-      // Ignore
-    }
-
-    return {
-      muhammedTime: '09:50',
-      midhunTime: '10:00',
-      roundingMode: 'ceil' as RoundingMode,
-      paidStatusMap: {} as Record<string, boolean>,
-    };
-  }, []);
-
-  const [muhammedTime, setMuhammedTime] = useState<string>(initialTodayData.muhammedTime);
-  const [midhunTime, setMidhunTime] = useState<string>(initialTodayData.midhunTime);
-  const [roundingMode, setRoundingMode] = useState<RoundingMode>(initialTodayData.roundingMode);
-  const [paidStatusMap, setPaidStatusMap] = useState<Record<string, boolean>>(initialTodayData.paidStatusMap);
-
+  // View & Modal states
   const [activeTab, setActiveTab] = useState<'calculator' | 'history'>('calculator');
   const [isRulesOpen, setIsRulesOpen] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
   const [isClearDuesOpen, setIsClearDuesOpen] = useState(false);
-  const [isSheetsModalOpen, setIsSheetsModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  // Google Sheets configuration
-  const [sheetsConfig, setSheetsConfig] = useState<GoogleSheetsConfig>(() => {
-    try {
-      const stored = localStorage.getItem(SHEETS_STORAGE_KEY);
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch (e) {
-      console.error('Failed to load sheets config', e);
-    }
-    return {
-      webAppUrl: '',
-      sheetUrl: '',
-      autoSync: true,
-    };
-  });
-
-  // Fund usage / expenditure records
-  const [fundUsageRecords, setFundUsageRecords] = useState<FundUsageRecord[]>(() => {
-    try {
-      const stored = localStorage.getItem(USAGE_STORAGE_KEY);
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch (e) {
-      console.error('Failed to load fund usage records', e);
-    }
-    return [];
-  });
-
-  // Save history entries to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(historyEntries));
-    } catch (e) {
-      console.error('Failed to save history', e);
-    }
-  }, [historyEntries]);
-
-  // Save fund usage records to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(USAGE_STORAGE_KEY, JSON.stringify(fundUsageRecords));
-    } catch (e) {
-      console.error('Failed to save usage records', e);
-    }
-  }, [fundUsageRecords]);
-
-  // Save sheets config to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(SHEETS_STORAGE_KEY, JSON.stringify(sheetsConfig));
-    } catch (e) {
-      console.error('Failed to save sheets config', e);
-    }
-  }, [sheetsConfig]);
-
-  // Auto-save today's working state to draft so refreshing never loses inputs
-  useEffect(() => {
-    if (selectedDate === todayDateStr) {
-      try {
-        localStorage.setItem(
-          DRAFT_PREFIX + todayDateStr,
-          JSON.stringify({ muhammedTime, midhunTime, roundingMode, paidStatusMap })
-        );
-      } catch {
-        // Ignore
-      }
-    }
-  }, [muhammedTime, midhunTime, roundingMode, paidStatusMap, selectedDate, todayDateStr]);
-
-  // FETCH GOOGLE SHEET DATA ON LOAD & REFRESH:
-  // If data exists in Google Sheet for today's date, show it!
-  const hasFetchedFromSheet = useRef(false);
-  useEffect(() => {
-    if (!sheetsConfig.webAppUrl) return;
-
-    let isMounted = true;
-    const fetchLatestFromSheet = async () => {
-      try {
-        const sheetEntries = await fetchSheetEntries(sheetsConfig.webAppUrl);
-        if (!isMounted || sheetEntries.length === 0) return;
-
-        // 1. Merge all sheet entries into historyEntries
-        setHistoryEntries((prev) => {
-          const map = new Map<string, DailyLedgerEntry>();
-          prev.forEach((e) => map.set(e.date, e));
-          sheetEntries.forEach((e) => map.set(e.date, e));
-          return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
-        });
-
-        // 2. Check if today's date exists in Google Sheet
-        const todayMatch = sheetEntries.find((e) => e.date === todayDateStr);
-        if (todayMatch && selectedDate === todayDateStr) {
-          setMuhammedTime(todayMatch.muhammedTime);
-          setMidhunTime(todayMatch.midhunTime);
-          setRoundingMode(todayMatch.roundingMode || 'ceil');
-
-          const paidMap: Record<string, boolean> = {};
-          todayMatch.contributions.forEach((c) => {
-            paidMap[c.memberId] = c.paid;
-          });
-          setPaidStatusMap(paidMap);
-          showToast(`Loaded today's records from Google Sheet`);
-        }
-      } catch (err) {
-        console.error('Error auto-syncing from sheet:', err);
-      }
-    };
-
-    if (!hasFetchedFromSheet.current) {
-      hasFetchedFromSheet.current = true;
-      fetchLatestFromSheet();
-    }
-  }, [sheetsConfig.webAppUrl, todayDateStr, selectedDate]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -236,6 +54,64 @@ export default function App() {
     }, 2800);
   };
 
+  // FETCH ALL DATA FROM GOOGLE SHEET
+  const loadDataFromSheet = useCallback(async (isInitial = false) => {
+    if (!isGoogleSheetsConfigured()) {
+      if (!isInitial) {
+        showToast('Please set your Apps Script URL in src/config.ts');
+      }
+      return;
+    }
+
+    setIsFetchingSheet(true);
+    try {
+      const { entries, expenses } = await fetchSheetData();
+      
+      setHistoryEntries(entries);
+      setFundUsageRecords(expenses);
+
+      // Check if there is data for today's date in Google Sheet
+      const todayEntry = entries.find((e) => e.date === todayDateStr);
+
+      if (todayEntry) {
+        // If data exists in sheet for today, populate it
+        setMuhammedTime(todayEntry.muhammedTime || '09:50');
+        setMidhunTime(todayEntry.midhunTime || '10:00');
+        setRoundingMode(todayEntry.roundingMode || 'ceil');
+
+        const paidMap: Record<string, boolean> = {};
+        todayEntry.contributions.forEach((c) => {
+          paidMap[c.memberId] = c.paid;
+        });
+        setPaidStatusMap(paidMap);
+
+        showToast(`Loaded today (${todayDateStr}) from Google Sheet`);
+      } else {
+        // If no data in sheet for today, show default times
+        if (selectedDate === todayDateStr) {
+          setMuhammedTime('09:50');
+          setMidhunTime('10:00');
+          setRoundingMode('ceil');
+          setPaidStatusMap({});
+        }
+        if (!isInitial) {
+          showToast(`Synced ${entries.length} entries from Google Sheet`);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to sync from Google Sheet:', err);
+      showToast('Could not fetch data from Google Sheet');
+    } finally {
+      setIsFetchingSheet(false);
+    }
+  }, [todayDateStr, selectedDate]);
+
+  // Initial load from Google Sheet on mount
+  useEffect(() => {
+    loadDataFromSheet(true);
+  }, []);
+
+  // Calculate live team fund and individual dues
   const calculation = useMemo(() => {
     return calculateTeamFund(muhammedTime, midhunTime, paidStatusMap, roundingMode);
   }, [muhammedTime, midhunTime, paidStatusMap, roundingMode]);
@@ -267,11 +143,11 @@ export default function App() {
     return fromHistory + pendingTodayAmount;
   }, [historyEntries, selectedDate, pendingTodayAmount]);
 
-  // When date is changed in header
+  // Date switching
   const handleDateChange = (newDate: string) => {
     setSelectedDate(newDate);
 
-    // If selected date has saved entry in history or sheet
+    // If selected date has saved entry in sheet/history
     const existing = historyEntries.find((e) => e.date === newDate);
     if (existing) {
       setMuhammedTime(existing.muhammedTime);
@@ -282,17 +158,12 @@ export default function App() {
         paidMap[c.memberId] = c.paid;
       });
       setPaidStatusMap(paidMap);
-      showToast(`Loaded ${newDate}`);
-    } else if (newDate === todayDateStr) {
-      // Revert to today's draft or defaults
-      setMuhammedTime(initialTodayData.muhammedTime);
-      setMidhunTime(initialTodayData.midhunTime);
-      setRoundingMode(initialTodayData.roundingMode);
-      setPaidStatusMap(initialTodayData.paidStatusMap);
+      showToast(`Loaded records for ${newDate}`);
     } else {
-      // New date with no records -> defaults
+      // Default data
       setMuhammedTime('09:50');
       setMidhunTime('10:00');
+      setRoundingMode('ceil');
       setPaidStatusMap({});
     }
   };
@@ -319,11 +190,6 @@ export default function App() {
     setRoundingMode('ceil');
     setPaidStatusMap({});
     setSelectedDate(todayDateStr);
-    try {
-      localStorage.removeItem(DRAFT_PREFIX + todayDateStr);
-    } catch {
-      // Ignore
-    }
     showToast('Reset to defaults');
   };
 
@@ -345,14 +211,20 @@ export default function App() {
       createdAt: Date.now(),
     };
 
+    // Update in-memory state
     setHistoryEntries((prev) => {
       const filtered = prev.filter((e) => e.date !== selectedDate);
       return [newEntry, ...filtered];
     });
 
-    if (sheetsConfig.autoSync && sheetsConfig.webAppUrl) {
-      syncDailyEntryToSheets(sheetsConfig.webAppUrl, newEntry);
-      showToast(`Saved for ${selectedDate} & synced to Google Sheet`);
+    if (isGoogleSheetsConfigured()) {
+      showToast(`Saving to Google Sheet...`);
+      const success = await syncDailyEntryToSheets(newEntry);
+      if (success) {
+        showToast(`Saved & synced ${selectedDate} to Google Sheet`);
+      } else {
+        showToast(`Saved locally. Check Google Apps Script URL.`);
+      }
     } else {
       showToast(`Saved for ${selectedDate} (₹${calculation.totalFund})`);
     }
@@ -374,7 +246,7 @@ export default function App() {
 
   const handleDeleteEntry = (id: string) => {
     setHistoryEntries((prev) => prev.filter((e) => e.id !== id));
-    showToast('Deleted');
+    showToast('Removed from view');
   };
 
   const handleClearAllHistory = () => {
@@ -382,7 +254,7 @@ export default function App() {
     showToast('History cleared');
   };
 
-  const handleConfirmClearDues = ({
+  const handleConfirmClearDues = async ({
     scope,
     purpose,
     amountSpent,
@@ -393,12 +265,14 @@ export default function App() {
   }) => {
     const clearedAmount = scope === 'today' ? pendingTodayAmount : pendingAllHistoryAmount;
 
+    // Mark current inputs as paid
     const updatedTodayPaid: Record<string, boolean> = {};
     calculation.contributions.forEach((c) => {
       updatedTodayPaid[c.memberId] = true;
     });
     setPaidStatusMap(updatedTodayPaid);
 
+    // Update history entries in memory
     if (scope === 'all') {
       setHistoryEntries((prev) =>
         prev.map((entry) => ({
@@ -438,9 +312,10 @@ export default function App() {
 
     setFundUsageRecords((prev) => [newUsageRecord, ...prev]);
 
-    if (sheetsConfig.autoSync && sheetsConfig.webAppUrl) {
-      syncExpenseToSheets(sheetsConfig.webAppUrl, newUsageRecord);
-      showToast(`Fund cleared: ₹${clearedAmount} & synced to Sheet`);
+    if (isGoogleSheetsConfigured()) {
+      showToast('Logging expenditure to Google Sheet...');
+      await syncExpenseToSheets(newUsageRecord);
+      showToast(`Cleared ₹${clearedAmount} & synced to Sheet`);
     } else {
       showToast(`Cleared ₹${clearedAmount} in dues`);
     }
@@ -448,7 +323,7 @@ export default function App() {
 
   const handleDeleteFundUsageRecord = (id: string) => {
     setFundUsageRecords((prev) => prev.filter((r) => r.id !== id));
-    showToast('Removed');
+    showToast('Record removed');
   };
 
   return (
@@ -460,8 +335,8 @@ export default function App() {
         onResetToDefaults={handleResetToDefaults}
         onOpenRules={() => setIsRulesOpen(true)}
         onOpenShare={() => setIsShareOpen(true)}
-        onOpenGoogleSheets={() => setIsSheetsModalOpen(true)}
-        isSheetsConnected={!!sheetsConfig.webAppUrl}
+        onRefreshFromSheet={() => loadDataFromSheet(false)}
+        isRefreshing={isFetchingSheet}
         activeTab={activeTab}
         onTabChange={setActiveTab}
         historyCount={historyEntries.length}
@@ -469,6 +344,24 @@ export default function App() {
 
       {/* Main Viewport */}
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-5 space-y-4">
+        {/* If Google Sheets is not yet configured, show a discreet reminder banner */}
+        {!isGoogleSheetsConfigured() && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                Google Sheet Web App URL is currently using placeholder. Paste your deployed Web App URL in <code className="font-mono bg-amber-100 px-1 py-0.5 rounded text-amber-900">src/config.ts</code> for live sheet sync.
+              </span>
+            </div>
+            <button
+              onClick={() => setIsRulesOpen(true)}
+              className="text-amber-900 underline font-medium hover:text-amber-950 shrink-0 cursor-pointer"
+            >
+              Setup Guide
+            </button>
+          </div>
+        )}
+
         {activeTab === 'calculator' ? (
           <>
             {/* Arrival Inputs */}
@@ -513,36 +406,32 @@ export default function App() {
       {/* Minimal Footer */}
       <footer className="border-t border-slate-200 bg-white py-3 mt-auto">
         <div className="max-w-4xl mx-auto px-4 flex items-center justify-between text-xs text-slate-400">
-          <span>Office Fund Tracker</span>
+          <span className="font-medium">Office Arrival & Team Fund Tracker</span>
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setIsSheetsModalOpen(true)}
-              className="hover:text-slate-700 transition-colors cursor-pointer"
-            >
-              Google Sheet
-            </button>
-            <span>·</span>
+            {GOOGLE_SHEET_VIEW_URL && (
+              <>
+                <a
+                  href={GOOGLE_SHEET_VIEW_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-slate-700 transition-colors"
+                >
+                  View Google Sheet
+                </a>
+                <span>·</span>
+              </>
+            )}
             <button
               onClick={() => setIsRulesOpen(true)}
               className="hover:text-slate-700 transition-colors cursor-pointer"
             >
-              Rules
+              Rules & Apps Script Code
             </button>
           </div>
         </div>
       </footer>
 
       {/* Modals */}
-      <GoogleSheetsModal
-        isOpen={isSheetsModalOpen}
-        onClose={() => setIsSheetsModalOpen(false)}
-        config={sheetsConfig}
-        onSaveConfig={setSheetsConfig}
-        historyEntries={historyEntries}
-        fundUsageRecords={fundUsageRecords}
-        onShowToast={showToast}
-      />
-
       <ClearDuesModal
         isOpen={isClearDuesOpen}
         onClose={() => setIsClearDuesOpen(false)}
@@ -573,7 +462,7 @@ export default function App() {
 
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-4 right-4 z-50 bg-slate-900 text-white text-xs font-medium px-3.5 py-2 rounded-lg shadow-lg flex items-center gap-2 border border-slate-800">
+        <div className="fixed bottom-4 right-4 z-50 bg-slate-900 text-white text-xs font-medium px-3.5 py-2 rounded-lg shadow-lg flex items-center gap-2 border border-slate-800 animate-in fade-in slide-in-from-bottom-2">
           <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span>{toastMessage}</span>
         </div>
